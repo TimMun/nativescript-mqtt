@@ -88,13 +88,33 @@ function onMessageArrived(message) {
 /*The next set of code is to run the PAHO MQTT Client inside of nativescript-MQTT */
 //require WebSockets so we can make sure that it is available for communication
 require('nativescript-websockets');
+var Loki = require("lokijs");
+var LokiNativescriptAdapter = require("lokijs/src/loki-nativescript-adapter");
+
 //set the windows object as it does not exist here
 let window = {
     setTimeout: setTimeout,
     clearTimeout: clearTimeout
 };
-//create a map object for the localStorage
-let localStorage = new Map();
+
+// Setup persistent storage
+var messagesCollection;
+var messagesDb = new Loki('mqttStorage.json', {
+    adapter: new LokiNativescriptAdapter(),
+    autosave: true,
+    autosaveInterval: 5000,
+    autoload: true,
+    autoloadCallback: loaded,
+});
+
+function loaded() {
+    messagesCollection = messagesDb.getCollection('messages');
+    if (messagesCollection === null) {
+        messagesCollection = messagesDb.addCollection('messages', {
+            unique: ["key"]
+        });
+    }
+}
 
 MQTT = (function(global) {
 
@@ -853,9 +873,14 @@ MQTT = (function(global) {
 
 
         // Load the local state, if any, from the saved version, only restore state relevant to this client.
-        for (var key in localStorage)
-            if (key.indexOf("Sent:" + this._localKey) == 0 || key.indexOf("Received:" + this._localKey) == 0)
-                this.restore(key);
+        let savedMessages = messagesCollection.find({
+            "key": {
+                "$containsAny": ["Sent:" + this._localKey, "Received:" + this._localKey]
+            }
+        })
+        for (let message in savedMessages) {
+            this.restore(message.key)
+        }
     };
 
     // Messaging Client public instance members.
@@ -1123,11 +1148,15 @@ MQTT = (function(global) {
             default:
                 throw Error(format(ERROR.INVALID_STORED_DATA, [key, storedMessage]));
         }
-        localStorage.setItem(prefix + this._localKey + wireMessage.messageIdentifier, JSON.stringify(storedMessage));
+        messagesCollection.insert({
+            key: prefix + this._localKey + wireMessage.messageIdentifier,
+            value: JSON.stringify(storedMessage)
+        })
+        messagesDb.saveDatabase()
     };
 
     ClientImpl.prototype.restore = function(key) {
-        var value = localStorage.getItem(key);
+        var value = messagesCollection.by("key", key);
         var storedMessage = JSON.parse(value);
 
         var wireMessage = new WireMessage(storedMessage.type, storedMessage);
@@ -1277,13 +1306,15 @@ MQTT = (function(global) {
                     if (this.connectOptions.cleanSession) {
                         for (var key in this._sentMessages) {
                             var sentMessage = this._sentMessages[key];
-                            localStorage.removeItem("Sent:" + this._localKey + sentMessage.messageIdentifier);
+                            messagesCollection.findAndRemove({ key: "Sent:" + this._localKey + sentMessage.messageIdentifier });
+                            messagesDb.saveDatabase()
                         }
                         this._sentMessages = {};
 
                         for (var key in this._receivedMessages) {
                             var receivedMessage = this._receivedMessages[key];
-                            localStorage.removeItem("Received:" + this._localKey + receivedMessage.messageIdentifier);
+                            messagesCollection.findAndRemove({ key: "Received:" + this._localKey + receivedMessage.messageIdentifier });
+                            messagesDb.saveDatabase()
                         }
                         this._receivedMessages = {};
                     }
@@ -1341,7 +1372,8 @@ MQTT = (function(global) {
                     // If this is a re flow of a PUBACK after we have restarted receivedMessage will not exist.
                     if (sentMessage) {
                         delete this._sentMessages[wireMessage.messageIdentifier];
-                        localStorage.removeItem("Sent:" + this._localKey + wireMessage.messageIdentifier);
+                        messagesCollection.findAndRemove({ key: "Sent:" + this._localKey + wireMessage.messageIdentifier });
+                        messagesDb.saveDatabase()
                         if (this.onMessageDelivered)
                             this.onMessageDelivered(sentMessage.payloadMessage);
                     }
@@ -1362,7 +1394,8 @@ MQTT = (function(global) {
 
                 case MESSAGE_TYPE.PUBREL:
                     var receivedMessage = this._receivedMessages[wireMessage.messageIdentifier];
-                    localStorage.removeItem("Received:" + this._localKey + wireMessage.messageIdentifier);
+                    messagesCollection.findAndRemove({ key: "Received:" + this._localKey + wireMessage.messageIdentifier });
+                    messagesDb.saveDatabase()
                     // If this is a re flow of a PUBREL after we have restarted receivedMessage will not exist.
                     if (receivedMessage) {
                         this._receiveMessage(receivedMessage);
@@ -1378,7 +1411,8 @@ MQTT = (function(global) {
                 case MESSAGE_TYPE.PUBCOMP:
                     var sentMessage = this._sentMessages[wireMessage.messageIdentifier];
                     delete this._sentMessages[wireMessage.messageIdentifier];
-                    localStorage.removeItem("Sent:" + this._localKey + wireMessage.messageIdentifier);
+                    messagesCollection.findAndRemove({ key: "Sent:" + this._localKey + wireMessage.messageIdentifier });
+                    messagesDb.saveDatabase()
                     if (this.onMessageDelivered)
                         this.onMessageDelivered(sentMessage.payloadMessage);
                     break;
