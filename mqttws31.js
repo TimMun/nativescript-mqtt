@@ -878,7 +878,8 @@ MQTT = (function(global) {
                 "$containsAny": ["Sent:" + this._localKey, "Received:" + this._localKey]
             }
         })
-        for (let message in savedMessages) {
+        for (let i = 0; i < savedMessages.length; i++) {
+            let message = savedMessages[i]
             this.restore(message.key)
         }
     };
